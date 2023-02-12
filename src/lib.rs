@@ -53,7 +53,10 @@ extern crate alloc;
 mod std_lock_api;
 
 mod interner;
-pub use interner::Interner;
+pub use interner::{Interner, InternerLock, InternerUtils};
+
+mod leaked;
+pub use leaked::LeakedInterner;
 
 mod interned;
 pub use interned::Interned;
@@ -68,12 +71,12 @@ mod tests {
         use {
             alloc::{boxed::Box, string::String},
             hash32::{BuildHasherDefault, FnvHasher},
-            spin::rwlock::RwLock,
+            spin::lock_api::RwLock,
         };
 
         // Create the interner
         #[cfg(feature = "std")]
-        let interner = Interner::new();
+        let interner: Interner<str> = Interner::new();
         #[cfg(not(feature = "std"))]
         let interner: Interner<str, BuildHasherDefault<FnvHasher>, RwLock<()>> =
             Interner::default();
@@ -107,12 +110,12 @@ mod tests {
         use {
             alloc::{boxed::Box, vec::Vec},
             hash32::{BuildHasherDefault, FnvHasher},
-            spin::rwlock::RwLock,
+            spin::lock_api::RwLock,
         };
 
         // Create the interner
         #[cfg(feature = "std")]
-        let interner = Interner::new();
+        let interner: Interner<[u8]> = Interner::new();
         #[cfg(not(feature = "std"))]
         let interner: Interner<[u8], BuildHasherDefault<FnvHasher>, RwLock<()>> =
             Interner::default();
@@ -146,12 +149,40 @@ mod tests {
     }
 
     #[test]
+    fn non_sync_interner() {
+        #[cfg(not(feature = "std"))]
+        use alloc::string::String;
+        use hash32::{BuildHasherDefault, FnvHasher};
+
+        let interner: Interner<str, BuildHasherDefault<FnvHasher>, core::cell::UnsafeCell<_>> =
+            Interner::with_hasher(BuildHasherDefault::new());
+
+        static_assertions::assert_not_impl_any!(
+            Interner<str, BuildHasherDefault<FnvHasher>, core::cell::UnsafeCell<_>>: Sync
+        );
+
+        let leaked = interner.leak();
+
+        static_assertions::assert_not_impl_any!(
+            LeakedInterner<str, BuildHasherDefault<FnvHasher>, core::cell::UnsafeCell<_>>: Sync
+        );
+
+        let non_static_str = String::from("a");
+
+        let interned = leaked.intern(non_static_str);
+
+        let static_str: &'static str = Interned::get(&interned);
+
+        assert_eq!(static_str, "a");
+    }
+
+    #[test]
     fn static_interner() {
         #[cfg(not(feature = "std"))]
         use alloc::string::String;
         use {
             hash32::{BuildHasherDefault, FnvHasher},
-            spin::rwlock::RwLock,
+            spin::lock_api::RwLock,
         };
 
         static INTERNER: Interner<str, BuildHasherDefault<FnvHasher>, RwLock<()>> =
@@ -170,7 +201,7 @@ mod tests {
     fn send_syn_unpin() {
         use {
             hash32::{BuildHasherDefault, FnvHasher},
-            spin::rwlock::RwLock,
+            spin::lock_api::RwLock,
         };
 
         fn is_send<T: Send>(_t: &T) {}
